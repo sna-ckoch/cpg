@@ -18,8 +18,8 @@
  * 2020/11/25                           ckoch           Initial version
  *
  */
-define(['N/runtime', 'N/https', 'N/search', 'N/record', 'N/cache'],
-    function (runtime, https, search, record, cache) {
+define(['N/runtime', 'N/https', 'N/search', 'N/record', 'N/cache', 'N/file'],
+    function (runtime, https, search, record, cache, file) {
         var keys = {};
         keys[runtime.EnvType.SANDBOX] = {
             baseurl_sp10: 'https://servicepro10.com/service/api/',
@@ -62,7 +62,53 @@ define(['N/runtime', 'N/https', 'N/search', 'N/record', 'N/cache'],
                 fields: {
                     Id: 'custrecord_sna_pmc_service_tech_id'
                 }
+            },
+            serviceProUser: {
+                id: 'customrecord_sp10_user',
+                fields: {
+                    Id: 'custrecord_sp10_user_id'
+                }
+            },
+            orderStatus: {
+                id: 'customrecord_sp10_order_status',
+                fields: {
+                    Id: 'custrecord_sp10_order_status_id'
+                }
+            },
+            orderNote: {
+                id: 'customrecord_sp10_order_note',
+                fields: {
+                    Id: 'custrecord_sp10_note_id',
+                    CreatedDateTime: 'custrecord_sp10_note_datecreated',
+                    Contents: 'custrecord_sp10_note_contents',
+                    LastUpdatedDateTime: 'custrecord_sp10_note_datelastupdated',
+                    AttachmentId: 'custrecord_sp10_note_attachmentid',
+                    nsSalesOrder: 'custrecord_sp10_note_salesorder',
+                    nsNoteType: 'custrecord_sp10_note_type',
+                    nsCreatedUser: 'custrecord_sp10_note_createduser',
+                    nsAttachment: 'custrecord_sp10_note_attachment',
+                    nsLastSync: 'custrecord_sp10_note_lastsync'
+                }
+            },
+            orderNoteType: {
+                id: 'customrecord_sp10_note_type',
+                fields: {
+                    Id: 'custrecord_sp10_note_type_id'
+                }
             }
+        };
+
+        var bodyMapping = {
+            UDF_Follow_Up_Required: 'custbody_sp10_trigger_followup_alert',
+            UDF_3rd_Party_Vendor_report: 'custbody_sp10_3rd_party_vendor_rpt',
+            UDF_Field_Service_Report_sent_to_client: 'custbody_sp10_rpt_sent_to_client',
+            UDF_Show_Actual_Hours_on_Report: 'custbody_sp10_show_actual_hours',
+            UDF_Follow_Up_Note: 'custbody_sp10_followup_note',
+            OrderCancelDate: 'custbody_sp10_cancel_date',
+            TechOrderStatus: 'custbody_sp10_tech_order_status', // only available as string value
+            nsContractNumber: 'custbody_sp10_contract_number',
+            nsAssignedTo: 'custbody_sp10_assigned_to',
+            nsOrderStatus: 'custbody_sp10_order_status'
         };
 
         function getCache() {
@@ -119,6 +165,12 @@ define(['N/runtime', 'N/https', 'N/search', 'N/record', 'N/cache'],
         }
 
         function fixJsonDate(str) {
+            if (str == 'True') {
+                return true;
+            } else if (str == 'False') {
+                return false;
+            }
+
             var reg = /\d{4}\-\d{2}\-\d{2}T\d{2}\:\d{2}\:\d{2}Z/; // 2020-11-30T08:00:00Z
 
             if (reg.test(str)) {
@@ -128,17 +180,16 @@ define(['N/runtime', 'N/https', 'N/search', 'N/record', 'N/cache'],
             return str;
         }
 
-        // create a new appointment record or update existing
         function upsertAppointment(appointment, salesOrderId) {
             var rec = null;
 
-            var recid = findExistingAppointment(appointment['Id']);
+            var recid = findExistingRecord(records.appointment.id, records.appointment.fields.Id, appointment['Id']);
             if (recid != null) {
                 try {
                     rec = record.load({ type: records.appointment.id, id: recid });
                 } catch (e) {
                     log.debug({
-                        title: 'APPOINTMENT_LOAD',
+                        title: 'upsertAppointment.load',
                         details: {
                             message: 'Failed to load existing Appointment record. A new one will be created',
                             appointment: appointment,
@@ -185,7 +236,7 @@ define(['N/runtime', 'N/https', 'N/search', 'N/record', 'N/cache'],
                 output = rec.save();
             } catch (e) {
                 log.error({
-                    title: 'APPOINTMENT_CREATE',
+                    title: 'upsertAppointment.save',
                     details: {
                       	e: e,
                         appointment: appointment
@@ -296,15 +347,15 @@ define(['N/runtime', 'N/https', 'N/search', 'N/record', 'N/cache'],
             return output;
         }
 
-        // searches for existing Appointment record based on Appointment ID
-        function findExistingAppointment(appointmentid) {
+        // find existing record based on id in field
+        function findExistingRecord(recordType, idField, idValue) {
             var output = null;
 
             try {
                 var results = search.create({
-                    type: records.appointment.id,
+                    type: recordType,
                     filters: [
-                        [records.appointment.fields.Id, 'is', appointmentid],
+                        [idField, 'is', idValue],
                         'and',
                         ['isinactive', 'is', 'F']
                     ],
@@ -318,9 +369,11 @@ define(['N/runtime', 'N/https', 'N/search', 'N/record', 'N/cache'],
                 }
             } catch (e) {
                 log.debug({
-                    title: 'APPOINTMENT_LOOKUP',
+                    title: 'findExistingRecord',
                     details: {
-                        appointmentid: appointmentid,
+                        recordType: recordType,
+                        idField: idField,
+                        idValue: idValue,
                         e: e
                     }
                 });
@@ -521,15 +574,424 @@ define(['N/runtime', 'N/https', 'N/search', 'N/record', 'N/cache'],
             return output;
         }
 
+        function updateBodyFields(order) {
+            log.debug({title: 'updateBodyFields.order', details: order});
+            if (util.isObject(order) == false) {
+                log.debug({
+                    title: 'updateBodyFields.validate',
+                    details: {
+                        message: 'Invalid order object, exiting',
+                        order: order
+                    }
+                });
+                return;
+            }
+
+            var nsInternalId = order['ExternalId'];
+            log.debug({title: 'updateBodyFields.nsInternalId', details: nsInternalId});
+            if (isEmpty(nsInternalId)) {
+                log.debug({
+                    title: 'updateBodyFields.validate',
+                    details: {
+                        message: 'Order ExternalId not found, exiting',
+                        order: order
+                    }
+                });
+                return;
+            }
+
+            if (!isValidExternalId(nsInternalId)) {
+                log.debug({
+                    title: 'updateBodyFields.validate',
+                    details: {
+                        message: 'Referenced ExternalId not found, exiting',
+                        nsInternalId: nsInternalId,
+                        order: order
+                    }
+                });
+                return;
+            }
+
+            var mappedValues = {};
+
+            for (var k in order) {
+                var val = order[k];
+
+                if (bodyMapping.hasOwnProperty(k)) {
+                    mappedValues[bodyMapping[k]] = fixJsonDate(val);
+                }
+            }
+
+            log.debug({title: 'updateBodyFields.mappedValues', details: mappedValues});
+            if (Object.keys(mappedValues).length == 0) return;
+
+            var visitId = order['ContractVisitId'];
+            var contractNum = getContractNumber(visitId);
+
+            mappedValues[bodyMapping.nsContractNumber] = contractNum
+
+            var assignedToId = (order['AssignedTo'] || {})['Id'];
+            var assignedToFirstName = (order['AssignedTo'] || {})['FirstName'];
+            var assignedToLastName = (order['AssignedTo'] || {})['LastName'];
+            var assignedToEmpNum = (order['AssignedTo'] || {})['EmployeeNumber'];
+
+            if (!isEmpty(assignedToId)) {
+                var assignedToName = assignedToEmpNum;
+
+                if (!isEmpty(assignedToFirstName) && !isEmpty(assignedToLastName)) {
+                    assignedToName = assignedToFirstName + ' ' + assignedToLastName;
+                }
+
+                mappedValues[bodyMapping.nsAssignedTo] = getOrCreateListValue(assignedToId, assignedToName, records.serviceProUser.id, records.serviceProUser.fields.Id);
+            } else {
+                mappedValues[bodyMapping.nsAssignedTo] = null;
+            }
+
+            var statusId = (order['OrderStatus'] || {})['Id'];
+            var statusCode = (order['OrderStatus'] || {})['CodeNumber']; // mapping CodeNumber instead of Value to mimic ui
+
+            if (!isEmpty(statusId) && !isEmpty(statusCode)) {
+                mappedValues[bodyMapping.nsOrderStatus] = getOrCreateListValue(statusId, statusCode, records.orderStatus.id, records.orderStatus.fields.Id);
+            } else {
+                mappedValues[bodyMapping.nsOrderStatus] = null;
+            }
+
+            // compare current values to new ones first to prevent excessive updates
+            var finalVals = diffValues(mappedValues, nsInternalId);
+
+            log.debug({
+                title: 'updateBodyFields',
+                details: {
+                    nsInternalId: nsInternalId,
+                    mappedValues: mappedValues,
+                    finalVals: finalVals
+                }
+            });
+
+            if (Object.keys(finalVals).length > 0) {
+                try {
+                    record.submitFields({
+                        type: record.Type.SALES_ORDER,
+                        id: nsInternalId,
+                        values: finalVals
+                    });
+                } catch (e) {
+                    log.error({
+                        title: 'submitFields',
+                        details: {
+                            nsInternalId: nsInternalId,
+                            mappedValues: mappedValues,
+                            finalVals: finalVals,
+                            e: e
+                        }
+                    });
+                }
+            }
+        }
+
+        function getContractNumber(visitId) {
+            var output = null;
+
+            if (!isEmpty(visitId)) {
+                try {
+                    var result = callapi('/Contract/All?$filter=ContractSchedule/ContractVisit/Id eq ' + visitId + '&$select=ContractNumber,RenewalNumber', true, 'get');
+
+                    var contractNum = result.d.results[0]['ContractNumber'];
+                    var renewalNum = result.d.results[0]['RenewalNumber'];
+
+                    if (!isEmpty(contractNum)) {
+                        output = contractNum;
+
+                        if (!isEmpty(renewalNum)) {
+                            renewalNum = '1';
+                        }
+
+                        output += '-' + renewalNum;
+                    }
+                } catch (e) {
+                    log.error({
+                        title: 'getContractNumber',
+                        details: {
+                            visitId: visitId,
+                            e: e
+                        }
+                    });
+                }
+            }
+
+            return output;
+        }
+
+        // compares mappedValues to current values on txn/sales order (id: nsInternalId)
+        // outputs only values that are different
+        function diffValues(mappedValues, nsInternalId) {
+            var output = {};
+
+            if (util.isObject(mappedValues) && Object.keys(mappedValues).length > 0) {
+                var lookups = search.lookupFields({
+                    type: 'transaction',
+                    id: nsInternalId,
+                    columns: Object.keys(mappedValues)
+                });
+
+                for (var k in mappedValues) {
+                    var newVal = mappedValues[k];
+                    var curVal = lookups[k];
+
+                    if (util.isArray(curVal)) {
+                        if (curVal.length == 1) {
+                            curVal = curVal[0].value;
+                        } else {
+                            curVal = null;
+                        }
+                    }
+
+                    if (util.isBoolean(curVal)) {
+                        newVal = (newVal ? true : false);
+                    }
+
+                    if (util.isDate(newVal)) {
+                        curVal = new Date(curVal);
+                    }
+
+                    var isEqual = (curVal == newVal);
+                    if (util.isDate(curVal) && util.isDate(newVal)) {
+                        isEqual = (curVal.getTime() === newVal.getTime());
+                    }
+
+                    log.debug({
+                        title: 'diffValues',
+                        details: {
+                            k: k,
+                            curVal: curVal,
+                            newVal: newVal,
+                            isEqual: isEqual
+                        }
+                    });
+
+                    if (!isEqual) {
+                        output[k] = newVal;
+                    }
+                }
+            }
+
+
+            return output;
+        }
+
+        // searches for record with internal id matching external id from servicepro
+        // servicepro will retain an externalid after the record has been deleted from netsuite
+        function isValidExternalId(externalId) {
+            var output = false;
+
+            if (util.isString(externalId) || util.isNumber(externalId)) {
+                var paged = search.create({
+                    type: 'transaction',
+                    filters: [
+                        ['internalid', 'anyof', externalId]
+                    ],
+                    columns: ['internalid']
+                }).runPaged();
+
+                if (paged.count > 1) {
+                    output = true;
+                }
+            }
+
+            return output;
+        }
+
+        function isEmpty(stValue) {
+            return ((stValue === '' || stValue == null || stValue == undefined) || (stValue.constructor === Array && stValue.length == 0) || (stValue.constructor === Object && (function (v) {
+                for (var k in v)
+                    return false;
+                return true;
+            })(stValue)));
+        }
+
+        function nullIfEmpty(what) {
+            return (isEmpty(what) ? null : what);
+        }
+
+        function upsertOrderNote(orderNote) {
+            log.debug({title: 'upsertOrderNote.orderNote', details: orderNote});
+            if (util.isObject(orderNote) == false || isEmpty(orderNote['Id'])) {
+                log.debug({
+                    title: 'upsertOrderNote.validate',
+                    details: {
+                        message: 'Invalid orderNote object, exiting',
+                        orderNote: orderNote
+                    }
+                });
+                return;
+            }
+
+            var rec = null;
+
+            var recid = findExistingRecord(records.orderNote.id, records.orderNote.fields.Id, orderNote['Id']);
+            if (!isEmpty(recid)) {
+                try {
+                    rec = record.load({ type: records.orderNote.id, id: recid });
+                } catch (e) {
+                    log.debug({
+                        title: 'upsertOrderNote.load',
+                        details: {
+                            message: 'Failed to load existing Order Note record. A new one will be created',
+                            orderNote: orderNote,
+                            e: e
+                        }
+                    });
+                }
+            }
+            if (isEmpty(rec)) {
+                rec = record.create({ type: records.orderNote.id });
+            }
+
+            rec.setValue({
+                fieldId: records.orderNote.fields.nsLastSync,
+                value: new Date()
+            });
+
+            //--- nsSalesOrder
+
+            var salesOrderFieldValue = nullIfEmpty((orderNote['Order'] || {})['ExternalId']);
+
+            if (!isEmpty(salesOrderFieldValue)) {
+                if (!isValidExternalId(salesOrderFieldValue)) {
+                    salesOrderFieldValue = null;
+                }
+            }
+
+            rec.setValue({
+                fieldId: records.orderNote.fields.nsSalesOrder,
+                value: salesOrderFieldValue
+            });
+
+            //--- nsNoteType
+
+            var noteTypeId = (orderNote['NoteType'] || {})['Id'];
+            var noteTypeVal = (orderNote['NoteType'] || {})['Value'];
+            var noteTypeFieldValue = null;
+
+            if (!isEmpty(noteTypeId) && !isEmpty(noteTypeVal)) {
+                noteTypeFieldValue = getOrCreateListValue(noteTypeId, noteTypeVal, records.orderNoteType.id, records.orderNoteType.fields.Id);
+            }
+
+            rec.setValue({
+                fieldId: records.orderNote.fields.nsNoteType,
+                value: noteTypeFieldValue
+            });
+
+            //--- nsCreatedUser
+
+            var createdUserId = (orderNote['CreatedUser'] || {})['Id'];
+            var createdUserFirstName = (orderNote['CreatedUser'] || {})['FirstName'];
+            var createdUserLastName = (orderNote['CreatedUser'] || {})['LastName'];
+            var createdUserEmpNum = (orderNote['CreatedUser'] || {})['EmployeeNumber'];
+            var createdUserFieldValue = null;
+
+            if (!isEmpty(createdUserId)) {
+                var createdUserName = createdUserEmpNum;
+
+                if (!isEmpty(createdUserFirstName) && !isEmpty(createdUserLastName)) {
+                    createdUserName = createdUserFirstName + ' ' + createdUserLastName;
+                }
+
+                createdUserFieldValue = getOrCreateListValue(createdUserId, createdUserName, records.serviceProUser.id, records.serviceProUser.fields.Id);
+            }
+
+            rec.setValue({
+                fieldId: records.orderNote.fields.nsCreatedUser,
+                value: createdUserFieldValue
+            });
+
+            //--- basic field mapping
+
+            for (var k in orderNote) {
+                var val = orderNote[k];
+
+                if (records.orderNote.fields.hasOwnProperty(k)) {
+                    rec.setValue({
+                        fieldId: records.orderNote.fields[k],
+                        value: fixJsonDate(val),
+                        ignoreFieldChange: true
+                    });
+                }
+            }
+
+            var output = null;
+
+            try {
+                output = rec.save();
+            } catch (e) {
+                log.error({
+                    title: 'upsertAppointment.save',
+                    details: {
+                        e: e,
+                        orderNote: orderNote
+                    }
+                });
+            }
+
+            return output;
+        }
+
+        function mimeToFileType(mime) {
+            var lookup = {};
+
+            lookup['application/x-autocad'] = file.Type.AUTOCAD;
+            lookup['image/x-xbitmap'] = file.Type.BMPIMAGE;
+            lookup['text/csv'] = file.Type.CSV;
+            lookup['application/vnd.ms-excel'] = file.Type.EXCEL;
+            lookup['application/x-shockwave-flash'] = file.Type.FLASH;
+            lookup['image/gif'] = file.Type.GIFIMAGE;
+            lookup['application/?x-?gzip-?compressed'] = file.Type.GZIP;
+            lookup['text/html'] = file.Type.HTMLDOC;
+            lookup['image/ico'] = file.Type.ICON;
+            lookup['text/javascript'] = file.Type.JAVASCRIPT;
+            lookup['image/jpeg'] = file.Type.JPGIMAGE;
+            lookup['application/json'] = file.Type.JSON;
+            lookup['message/rfc822'] = file.Type.MESSAGERFC;
+            lookup['audio/mpeg'] = file.Type.MP3;
+            lookup['video/mpeg'] = file.Type.MPEGMOVIE;
+            lookup['application/vnd.ms-project'] = file.Type.MSPROJECT;
+            lookup['application/pdf'] = file.Type.PDF;
+            lookup['image/pjpeg'] = file.Type.PJPGIMAGE;
+            lookup['text/plain'] = file.Type.PLAINTEXT;
+            lookup['image/x-png'] = file.Type.PNGIMAGE;
+            lookup['application/postscript'] = file.Type.POSTSCRIPT;
+            lookup['application/?vnd.?ms-?powerpoint'] = file.Type.POWERPOINT;
+            lookup['video/quicktime'] = file.Type.QUICKTIME;
+            lookup['application/rtf'] = file.Type.RTF;
+            lookup['application/sms'] = file.Type.SMS;
+            lookup['text/css'] = file.Type.STYLESHEET;
+            lookup['image/tiff'] = file.Type.TIFFIMAGE;
+            lookup['application/vnd.visio'] = file.Type.VISIO;
+            lookup['application/msword'] = file.Type.WORD;
+            lookup['text/xml'] = file.Type.XMLDOC;
+            lookup['application/zip'] = file.Type.ZIP;
+
+            if (!isEmpty(mime) && lookup.hasOwnProperty(mime)) {
+                return lookup[mime];
+            } else {
+                return null;
+            }
+        }
+
         return {
             keys: keys,
             records: records,
             getCache: getCache,
+            isEmpty: isEmpty,
+            nullIfEmpty: nullIfEmpty,
+            mimeToFileType: mimeToFileType,
             callapi: callapi,
             upsertAppointment: upsertAppointment,
             uploadFileNote: uploadFileNote,
             getSpOrderId: getSpOrderId,
-            getSpOrderIdAPI: getSpOrderIdAPI
+            getSpOrderIdAPI: getSpOrderIdAPI,
+            updateBodyFields: updateBodyFields,
+            upsertOrderNote: upsertOrderNote
         };
 
     });

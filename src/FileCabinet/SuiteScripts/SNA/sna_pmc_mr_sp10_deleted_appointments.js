@@ -24,21 +24,21 @@ define(['N/runtime', 'N/record', 'N/search', './sna_pmc_mod_sp10_globals.js'],
 
             var cacheKey = '__clock_deleteappt';
 
-            var lastClock = nullIfEmpty(runtime.getCurrentScript().getParameter({ name: 'custscript_sna_pmc_deldateoverride' }));
-            if (lastClock == null) {
+            var lastClock = runtime.getCurrentScript().getParameter({ name: 'custscript_sna_pmc_deldateoverride' });
+            if (globals.isEmpty(lastClock)) {
                 lastClock = globals.getCache().get({
                     key: cacheKey
                 });
             }
 
-            if (lastClock == null) {
+            if (globals.isEmpty(lastClock)) {
                 var d = new Date();
                 d.setHours(d.getHours() - 24); // default to 24hr lookback if no last run time
                 lastClock = d.toISOString();
             }
             log.debug({ title: 'LASTCLOCK_FINAL', details: lastClock });
 
-            var maxPages = 5;
+            var maxPages = 100;
             var pages = 0;
 
             try {
@@ -50,12 +50,12 @@ define(['N/runtime', 'N/record', 'N/search', './sna_pmc_mod_sp10_globals.js'],
                     log.debug({ title: 'DEL_APPOINTMENTS_RES', details: JSON.stringify(response) });
 
                     // fix and store the clock from this request to be used next time
-                    var newClock = response.d['__clock'] || null;
+                    var newClock = response.d['__clock'];
 
                     // only set the clock from the first page of results so our next request starts there
                     // if we store on every page, our next request will ask for updates since we received the LAST page
                     // meaning if an update happened while we were downloading results, it won't be captured on the next update
-                    if (newClock != null && pages == 0) {
+                    if (!globals.isEmpty(newClock) && pages == 0) {
                         var parts = newClock.split(/\D+/);
                         if (parts.length == 6) {
                             // yyyy-mm-dd-hh-mm-ss UTC
@@ -72,9 +72,9 @@ define(['N/runtime', 'N/record', 'N/search', './sna_pmc_mod_sp10_globals.js'],
                     }
 
                     // pages of 20, gives us url to next page if any
-                    url = response.d['__next'] || null;
+                    url = response.d['__next'];
 
-                    if (url != null) {
+                    if (!globals.isEmpty(url)) {
                         url = url.replace('/api/', '/'); // callapi already has this bit
                         log.debug({ title: 'NEXT_FINAL', details: url });
                     }
@@ -82,9 +82,9 @@ define(['N/runtime', 'N/record', 'N/search', './sna_pmc_mod_sp10_globals.js'],
                     appointments = appointments.concat(response.d.results);
 
                     pages++;
-                } while (url != null && pages < maxPages);
+                } while (!globals.isEmpty(url) && pages < maxPages);
             } catch (e) {
-                log.error({ title: 'GET_ERROR', details: JSON.stringify(e) });
+                log.error({ title: 'GET_ERROR', details: e });
             }
 
             log.debug({ title: 'DEL_APPOINTMENTS_LEN', details: appointments.length });
@@ -99,26 +99,9 @@ define(['N/runtime', 'N/record', 'N/search', './sna_pmc_mod_sp10_globals.js'],
             log.debug({ title: 'apptId', details: apptId });
 
             var apptRec = findAppointment(apptId);
-            log.debug({ title: 'apptRec', details: JSON.stringify(apptRec) });
+            log.debug({ title: 'apptRec', details: apptRec });
 
-            if (!isEmpty(apptRec.event)) {
-                log.debug({ title: 'Delete event', details: apptRec.event });
-
-                try {
-                    record.delete({
-                        type: record.Type.CALENDAR_EVENT,
-                        id: apptRec.event
-                    });
-                } catch (e) {
-                    log.error({
-                        title: 'DELETE_EVENT', details: {
-                            eventId: apptRec.event,
-                            e: e
-                        }
-                    });
-                }
-            }
-            if (!isEmpty(apptRec.id)) {
+            if (!globals.isEmpty(apptRec.id)) {
                 log.debug({ title: 'Delete appointment', details: apptRec.id });
 
                 try {
@@ -128,7 +111,8 @@ define(['N/runtime', 'N/record', 'N/search', './sna_pmc_mod_sp10_globals.js'],
                     });
                 } catch (e) {
                     log.error({
-                        title: 'DELETE_APPT', details: {
+                        title: 'DELETE_APPT',
+                        details: {
                             eventId: apptRec.id,
                             e: e
                         }
@@ -139,22 +123,20 @@ define(['N/runtime', 'N/record', 'N/search', './sna_pmc_mod_sp10_globals.js'],
 
         function findAppointment(apptId) {
             var output = {
-                id: null,
-                event: null
+                id: null
             };
 
-            if (!isEmpty(apptId)) {
+            if (!globals.isEmpty(apptId)) {
                 search.create({
                     type: globals.records.appointment.id,
                     filters: [
                         [globals.records.appointment.fields.Id, 'is', apptId]
                     ],
-                    columns: ['internalid', globals.records.appointment.fields.nsLinkedEvent]
+                    columns: ['internalid']
                 }).run().each(function (result) {
-                    log.debug({ title: 'result', details: JSON.stringify(result) });
+                    log.debug({ title: 'result', details: result });
 
-                    output.id = nullIfEmpty(result.id);
-                    output.event = nullIfEmpty(result.getValue({ name: globals.records.appointment.fields.nsLinkedEvent }));
+                    output.id = globals.nullIfEmpty(result.id);
 
                     return false;
                 });
@@ -164,19 +146,7 @@ define(['N/runtime', 'N/record', 'N/search', './sna_pmc_mod_sp10_globals.js'],
         }
 
         function summarize(context) {
-            log.debug({ title: 'SUMMARIZE', details: JSON.stringify(context) });
-        }
-
-        function isEmpty(stValue) {
-            return ((stValue === '' || stValue == null || stValue == undefined) || (stValue.constructor === Array && stValue.length == 0) || (stValue.constructor === Object && (function (v) {
-                for (var k in v)
-                    return false;
-                return true;
-            })(stValue)));
-        }
-
-        function nullIfEmpty(what) {
-            return (isEmpty(what) ? null : what);
+            log.debug({ title: 'SUMMARIZE', details: context });
         }
 
         return {

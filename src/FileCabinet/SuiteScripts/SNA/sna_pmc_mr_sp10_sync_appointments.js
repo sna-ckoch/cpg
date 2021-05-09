@@ -22,17 +22,17 @@ define(['N/runtime', './sna_pmc_mod_sp10_globals.js'], function (runtime, global
     function getInputData(context) {
         var appointments = [];
 
-        var lastClock = runtime.getCurrentScript().getParameter({ name: 'custscript_sna_pmc_sp10_lastupdate_over' }) || null;
+        var lastClock = runtime.getCurrentScript().getParameter({ name: 'custscript_sna_pmc_sp10_lastupdate_over' });
         log.debug({ title: 'LASTCLOCK_PARAM', details: lastClock });
 
-        if (lastClock == null) {
+        if (globals.isEmpty(lastClock)) {
             lastClock = globals.getCache().get({
                 key: '__clock'
             });
             log.debug({ title: 'LASTCLOCK_CACHE', details: lastClock });
         }
 
-        if (lastClock == null) {
+        if (globals.isEmpty(lastClock)) {
             var d = new Date();
             d.setHours(d.getHours() - 24); // default to 24hr lookback if no last run time
             lastClock = d.toISOString();
@@ -49,13 +49,16 @@ define(['N/runtime', './sna_pmc_mod_sp10_globals.js'], function (runtime, global
             do {
                 log.debug({ title: 'GET_APPOINTMENTS_REQ', details: url });
                 var response = globals.callapi(url, true, 'get');
-                log.debug({ title: 'GET_APPOINTMENTS_RES', details: JSON.stringify(response) });
+                log.debug({ title: 'GET_APPOINTMENTS_RES', details: response });
 
                 // fix and store the clock from this request to be used next time
-                var newClock = response.d['__clock'] || null;
+                var newClock = response.d['__clock'];
                 log.debug({ title: 'NEWCLOCK_RAW', details: newClock });
 
-                if (newClock != null) {
+                // only set the clock from the first page of results so our next request starts there
+                // if we store on every page, our next request will ask for updates since we received the LAST page
+                // meaning if an update happened while we were downloading results, it won't be captured on the next update
+                if (!globals.isEmpty(newClock) && pages == 0) {
                     var parts = newClock.split(/\D+/);
                     if (parts.length == 6) {
                         // yyyy-mm-dd-hh-mm-ss UTC
@@ -72,10 +75,10 @@ define(['N/runtime', './sna_pmc_mod_sp10_globals.js'], function (runtime, global
                 }
 
                 // pages of 20, gives us url to next page if any
-                url = response.d['__next'] || null;
+                url = response.d['__next'];
                 log.debug({ title: 'NEXT_RAW', details: url });
 
-                if (url != null) {
+                if (!globals.isEmpty(url)) {
                     url = url.replace('/api/', '/'); // callapi already has this bit
                 }
                 log.debug({ title: 'NEXT_FINAL', details: url });
@@ -84,9 +87,9 @@ define(['N/runtime', './sna_pmc_mod_sp10_globals.js'], function (runtime, global
                 log.debug({ title: 'APPOINTMENTS_LEN', details: appointments.length });
 
                 pages++;
-            } while (url != null && pages < maxPages);
+            } while (!globals.isEmpty(url) && pages < maxPages);
         } catch (e) {
-            log.error({ title: 'GET_ERROR', details: JSON.stringify(e) });
+            log.error({ title: 'GET_ERROR', details: e });
         }
 
         return appointments;
@@ -96,14 +99,14 @@ define(['N/runtime', './sna_pmc_mod_sp10_globals.js'], function (runtime, global
         //log.debug({ title: 'MAP_CONTEXT', details: JSON.stringify(context) });
 
         var appointment = JSON.parse(context.value);
-        log.debug({ title: 'MAP_APPOINTMENT', details: JSON.stringify(appointment) });
+        log.debug({ title: 'MAP_APPOINTMENT', details: appointment });
 
         var recid = globals.upsertAppointment(appointment);
         log.debug({ title: 'MAP_RECID', details: recid });
     }
 
     function summarize(context) {
-        log.debug({ title: 'SUMMARIZE', details: JSON.stringify(context) });
+        log.debug({ title: 'SUMMARIZE', details: context });
     }
 
     return {
